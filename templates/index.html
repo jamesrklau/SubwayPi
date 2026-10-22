@@ -1,0 +1,620 @@
+<!DOCTYPE html>
+
+<html>
+
+<head>
+
+    <title>SubwayPi</title>
+
+    <meta
+        name="viewport"
+        content="width=device-width, initial-scale=1"
+    >
+
+    <style>
+
+        body {
+            font-family: Arial, sans-serif;
+            background: #111;
+            color: white;
+            margin: 0;
+            padding: 30px;
+        }
+
+
+        .container {
+            max-width: 600px;
+            margin: auto;
+        }
+
+
+        h1 {
+            margin-bottom: 5px;
+        }
+
+
+        .updated {
+            color: #aaa;
+            margin-bottom: 30px;
+        }
+
+
+        /* --------------------------------
+           Train card
+           -------------------------------- */
+
+        .train {
+
+            background: #222;
+
+            border-radius: 12px;
+
+            padding: 20px;
+
+            margin-bottom: 15px;
+
+            display: flex;
+
+            justify-content: space-between;
+
+            align-items: center;
+
+            transition:
+                background 0.5s ease,
+                transform 0.5s ease,
+                opacity 0.5s ease;
+
+        }
+
+
+        /* --------------------------------
+           Approaching
+           -------------------------------- */
+
+        .train.approaching {
+
+            background: #332f22;
+
+        }
+
+
+        /* --------------------------------
+           Leave now
+           -------------------------------- */
+
+        .train.leave-now {
+
+            background: #3a2222;
+
+        }
+
+
+        /* --------------------------------
+           Departing animation
+           -------------------------------- */
+
+        .train.departing {
+
+            opacity: 0;
+
+            transform:
+                translateY(-30px);
+
+        }
+
+
+        .route {
+
+            font-size: 32px;
+
+            font-weight: bold;
+
+        }
+
+
+        .minutes {
+
+            font-size: 28px;
+
+        }
+
+
+        .leave {
+
+            color: #aaa;
+
+            margin-top: 5px;
+
+        }
+
+
+        .approaching .leave {
+
+            color: #ddd;
+
+        }
+
+
+        .leave-now .leave {
+
+            color: #fff;
+
+        }
+
+
+        /*
+         * While FLIP animation is happening,
+         * temporarily disable the normal transition.
+         */
+
+        .train.flipping {
+
+            transition: none;
+
+        }
+
+    </style>
+
+</head>
+
+
+<body>
+
+
+<div class="container">
+
+
+    <h1>{{ station_name }}</h1>
+
+
+    <div class="updated">
+
+        Northbound • Updated
+
+        <span id="updated">
+            --:--:--
+        </span>
+
+    </div>
+
+
+    <div id="trains"></div>
+
+
+</div>
+
+
+<script>
+
+
+// --------------------------------
+// Update visual state
+// --------------------------------
+
+function updateTrainState(
+    trainElement,
+    train
+) {
+
+    trainElement.classList.remove(
+        "approaching",
+        "leave-now"
+    );
+
+
+    if (train.leave_in <= 0) {
+
+        trainElement.classList.add(
+            "leave-now"
+        );
+
+    }
+
+    else if (train.leave_in <= 2) {
+
+        trainElement.classList.add(
+            "approaching"
+        );
+
+    }
+
+}
+
+
+// --------------------------------
+// Animate cards into their
+// new chronological positions
+// --------------------------------
+
+function animateReorder(
+    container,
+    previousPositions
+) {
+
+    for (
+        const element
+        of container.children
+    ) {
+
+        const oldPosition =
+            previousPositions.get(
+                element.dataset.tripId
+            );
+
+
+        if (!oldPosition) {
+
+            continue;
+
+        }
+
+
+        const newPosition =
+            element.getBoundingClientRect();
+
+
+        const deltaY =
+            oldPosition.top -
+            newPosition.top;
+
+
+        if (deltaY === 0) {
+
+            continue;
+
+        }
+
+
+        /*
+         * Temporarily move the card
+         * back to where it came from.
+         */
+
+        element.classList.add(
+            "flipping"
+        );
+
+
+        element.style.transform =
+            `translateY(${deltaY}px)`;
+
+
+        /*
+         * Force the browser to recognize
+         * the starting position.
+         */
+
+        element.getBoundingClientRect();
+
+
+        /*
+         * Remove the temporary position.
+         */
+
+        element.classList.remove(
+            "flipping"
+        );
+
+
+        element.style.transform = "";
+
+
+    }
+
+}
+
+
+// --------------------------------
+// Get latest train data
+// --------------------------------
+
+async function updateTrains() {
+
+    try {
+
+        const response =
+            await fetch("/api/trains");
+
+
+        const trains =
+            await response.json();
+
+
+        const container =
+            document.getElementById(
+                "trains"
+            );
+
+
+        // --------------------------------
+        // Remember where existing cards are
+        // --------------------------------
+
+        const previousPositions =
+            new Map();
+
+
+        for (
+            const element
+            of container.children
+        ) {
+
+            previousPositions.set(
+                element.dataset.tripId,
+                element.getBoundingClientRect()
+            );
+
+        }
+
+
+        // --------------------------------
+        // Find trains currently displayed
+        // --------------------------------
+
+        const existingTrains =
+            new Map();
+
+
+        for (
+            const element
+            of container.children
+        ) {
+
+            existingTrains.set(
+                element.dataset.tripId,
+                element
+            );
+
+        }
+
+
+        // --------------------------------
+        // Process current trains
+        // --------------------------------
+
+        for (const train of trains) {
+
+            const trainId =
+                train.trip_id;
+
+
+            let trainElement =
+                existingTrains.get(
+                    trainId
+                );
+
+
+            // --------------------------------
+            // Existing train
+            // --------------------------------
+
+            if (trainElement) {
+
+                trainElement
+                    .querySelector(".minutes")
+                    .textContent =
+                    `${train.minutes_away} min`;
+
+
+                trainElement
+                    .querySelector(".leave-time")
+                    .textContent =
+                    train.leave_in;
+
+
+                updateTrainState(
+                    trainElement,
+                    train
+                );
+
+
+                existingTrains.delete(
+                    trainId
+                );
+
+            }
+
+
+            // --------------------------------
+            // New train
+            // --------------------------------
+
+            else {
+
+                trainElement =
+                    document.createElement(
+                        "div"
+                    );
+
+
+                trainElement.className =
+                    "train";
+
+
+                trainElement.id =
+                    `train-${train.trip_id}`;
+
+
+                trainElement.dataset.tripId =
+                    train.trip_id;
+
+
+                trainElement.innerHTML = `
+
+                    <div>
+
+                        <div class="route">
+                            ${train.route} train
+                        </div>
+
+
+                        <div class="leave">
+
+                            Leave in
+
+                            <span class="leave-time">
+                                ${train.leave_in}
+                            </span>
+
+                            min
+
+                        </div>
+
+                    </div>
+
+
+                    <div class="minutes">
+                        ${train.minutes_away} min
+                    </div>
+
+                `;
+
+
+                updateTrainState(
+                    trainElement,
+                    train
+                );
+
+
+                /*
+                 * Put the new train into
+                 * the correct chronological
+                 * position.
+                 */
+
+                const existingElements =
+                    Array.from(
+                        container.children
+                    );
+
+
+                const insertBefore =
+                    existingElements.find(
+                        element => {
+
+                            const existingMinutes =
+                                parseInt(
+                                    element
+                                        .querySelector(
+                                            ".minutes"
+                                        )
+                                        .textContent
+                                );
+
+
+                            return (
+                                train.minutes_away
+                                <
+                                existingMinutes
+                            );
+
+                        }
+                    );
+
+
+                if (insertBefore) {
+
+                    container.insertBefore(
+                        trainElement,
+                        insertBefore
+                    );
+
+                }
+
+                else {
+
+                    container.appendChild(
+                        trainElement
+                    );
+
+                }
+
+            }
+
+        }
+
+
+        // --------------------------------
+        // Animate trains that disappeared
+        // --------------------------------
+
+        for (
+            const trainElement
+            of existingTrains.values()
+        ) {
+
+            trainElement.classList.add(
+                "departing"
+            );
+
+
+            setTimeout(
+                () => {
+
+                    trainElement.remove();
+
+                },
+                500
+            );
+
+        }
+
+
+        // --------------------------------
+        // Animate reordering
+        // --------------------------------
+
+        animateReorder(
+            container,
+            previousPositions
+        );
+
+
+        // --------------------------------
+        // Update timestamp
+        // --------------------------------
+
+        document.getElementById(
+            "updated"
+        ).textContent =
+            new Date().toLocaleTimeString();
+
+
+    }
+
+
+    catch (error) {
+
+        console.error(
+            "Could not update trains:",
+            error
+        );
+
+    }
+
+}
+
+
+// --------------------------------
+// Initial update
+// --------------------------------
+
+updateTrains();
+
+
+// --------------------------------
+// Update every 30 seconds
+// --------------------------------
+
+setInterval(
+    updateTrains,
+    30000
+);
+
+
+</script>
+
+
+</body>
+
+</html>

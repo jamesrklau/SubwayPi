@@ -1,0 +1,369 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+
+    <meta charset="UTF-8">
+
+    <meta
+        name="viewport"
+        content="width=device-width, initial-scale=1.0"
+    >
+
+    <title>{{ station_name }}</title>
+
+    <style>
+
+        * {
+            box-sizing: border-box;
+        }
+
+        html,
+        body {
+            margin: 0;
+            padding: 0;
+            width: 100%;
+            min-height: 100%;
+        }
+
+        body {
+            font-family: Arial, Helvetica, sans-serif;
+
+            background: #1d2635;
+
+            color: white;
+
+            overflow: hidden;
+        }
+
+
+        .container {
+            width: 100%;
+            padding: 12px;
+        }
+
+
+        .header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+
+            margin-bottom: 10px;
+        }
+
+
+        .station {
+            font-size: clamp(14px, 3vw, 22px);
+            font-weight: 600;
+        }
+
+
+        .direction {
+            font-size: clamp(10px, 2vw, 14px);
+
+            opacity: 0.65;
+
+            white-space: nowrap;
+        }
+
+
+        .trains {
+
+            display: grid;
+
+            grid-template-columns:
+                repeat(
+                    auto-fit,
+                    minmax(80px, 1fr)
+                );
+
+            gap: 8px;
+
+            width: 100%;
+        }
+
+
+        .train {
+
+            background: rgba(
+                255,
+                255,
+                255,
+                0.08
+            );
+
+            border-radius: 12px;
+
+            padding: 10px 6px;
+
+            text-align: center;
+
+            min-width: 0;
+        }
+
+
+        .route {
+
+            font-size:
+                clamp(
+                    20px,
+                    5vw,
+                    32px
+                );
+
+            font-weight: bold;
+
+            line-height: 1;
+
+            margin-bottom: 6px;
+        }
+
+
+        .arrival {
+
+            font-size:
+                clamp(
+                    13px,
+                    3vw,
+                    19px
+                );
+
+            font-weight: 500;
+
+            white-space: nowrap;
+        }
+
+
+        .leave {
+
+            font-size:
+                clamp(
+                    9px,
+                    2vw,
+                    12px
+                );
+
+            opacity: 0.55;
+
+            margin-top: 4px;
+
+            white-space: nowrap;
+        }
+
+
+        .empty {
+
+            text-align: center;
+
+            padding: 12px;
+
+            font-size:
+                clamp(
+                    12px,
+                    3vw,
+                    16px
+                );
+
+            opacity: 0.65;
+        }
+
+    </style>
+
+</head>
+
+
+<body>
+
+    <div class="container">
+
+        <div class="header">
+
+            <div class="station">
+                🚇 {{ station_name }}
+            </div>
+
+            <div class="direction">
+                NORTHBOUND
+            </div>
+
+        </div>
+
+
+        <div
+            class="trains"
+            id="trains"
+        >
+
+            {% if trains %}
+
+                {% for train in trains %}
+
+                    <div class="train">
+
+                        <div class="route">
+                            {{ train.route }}
+                        </div>
+
+                        <div class="arrival">
+
+                            {% if train.minutes_away <= 0 %}
+
+                                NOW
+
+                            {% else %}
+
+                                {{ train.minutes_away }} min
+
+                            {% endif %}
+
+                        </div>
+
+                        <div class="leave">
+
+                            {% if train.leave_in <= 0 %}
+
+                                Leave now
+
+                            {% elif train.leave_in == 1 %}
+
+                                Leave in 1 min
+
+                            {% else %}
+
+                                Leave in
+                                {{ train.leave_in }} min
+
+                            {% endif %}
+
+                        </div>
+
+                    </div>
+
+                {% endfor %}
+
+            {% else %}
+
+                <div class="empty">
+                    No catchable trains
+                </div>
+
+            {% endif %}
+
+        </div>
+
+    </div>
+
+
+    <script>
+
+        async function updateTrains() {
+
+            try {
+
+                const response =
+                    await fetch("/api/compact");
+
+                const trains =
+                    await response.json();
+
+                const container =
+                    document.getElementById("trains");
+
+
+                if (trains.length === 0) {
+
+                    container.innerHTML = `
+                        <div class="empty">
+                            No catchable trains
+                        </div>
+                    `;
+
+                    return;
+                }
+
+
+                container.innerHTML =
+                    trains.map(train => {
+
+                        let arrival;
+
+                        if (
+                            train.minutes_away <= 0
+                        ) {
+
+                            arrival = "NOW";
+
+                        } else {
+
+                            arrival =
+                                `${train.minutes_away} min`;
+                        }
+
+
+                        let leave;
+
+                        if (
+                            train.leave_in <= 0
+                        ) {
+
+                            leave = "Leave now";
+
+                        } else if (
+                            train.leave_in === 1
+                        ) {
+
+                            leave =
+                                "Leave in 1 min";
+
+                        } else {
+
+                            leave =
+                                `Leave in ${train.leave_in} min`;
+                        }
+
+
+                        return `
+
+                            <div class="train">
+
+                                <div class="route">
+                                    ${train.route}
+                                </div>
+
+                                <div class="arrival">
+                                    ${arrival}
+                                </div>
+
+                                <div class="leave">
+                                    ${leave}
+                                </div>
+
+                            </div>
+
+                        `;
+
+                    }).join("");
+
+
+            } catch (error) {
+
+                console.error(
+                    "Unable to update trains:",
+                    error
+                );
+
+            }
+
+        }
+
+
+        setInterval(
+            updateTrains,
+            30000
+        );
+
+    </script>
+
+</body>
+
+</html>
