@@ -38,6 +38,28 @@
             margin-bottom: 30px;
         }
 
+        .direction-selector {
+            display: flex;
+            gap: 10px;
+            margin-bottom: 20px;
+        }
+
+        .direction-selector a {
+            flex: 1;
+            text-align: center;
+            padding: 12px;
+            border-radius: 8px;
+            background: #222;
+            color: #aaa;
+            text-decoration: none;
+            font-weight: bold;
+        }
+
+        .direction-selector a.active {
+            background: #444;
+            color: white;
+        }
+
 
         /* --------------------------------
            Train card
@@ -166,10 +188,27 @@
 
     <h1>{{ station_name }}</h1>
 
+        <div class="direction-selector">
 
-    <div class="updated">
+            <a
+                href="/?direction=northbound"
+                class="{{ 'active' if direction == 'northbound' else '' }}"
+            >
+                Northbound
+            </a>
 
-        Northbound • Updated
+            <a
+                href="/?direction=southbound"
+                class="{{ 'active' if direction == 'southbound' else '' }}"
+            >
+                Southbound
+            </a>
+
+        </div>
+
+        <div class="updated">
+
+            {{ direction|capitalize }} • Updated
 
         <span id="updated">
             --:--:--
@@ -313,7 +352,7 @@ async function updateTrains() {
     try {
 
         const response =
-            await fetch("/api/trains");
+            await fetch(`/api/trains?direction={{ direction }}`);
 
 
         const trains =
