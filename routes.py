@@ -1,4 +1,4 @@
-STATION_NAME = "Jay St-MetroTech"
+STATION_NAME = "W 4 ST-WASH SQ"
 
 ROUTES = {
     "A": {

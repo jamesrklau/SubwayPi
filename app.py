@@ -7,20 +7,110 @@ from flask import Flask, render_template, jsonify, request
 from mta import download_feed
 from arrivals import get_station_arrivals
 from stations import load_static_gtfs, build_station_config
-from departure import get_departure_options
 
 
 app = Flask(__name__)
 
-STATION_NAME = "Jay St-MetroTech"
+DEFAULT_STATION_ID = "A32"  # W 4 St-Wash Sq
 DEFAULT_DIRECTION = "northbound"
 
 
 @lru_cache(maxsize=1)
-def get_station_config():
-    """Load and cache the selected station's static GTFS configuration."""
-    data = load_static_gtfs()
-    return build_station_config(STATION_NAME, *data)
+def get_static_data():
+    """Download and cache the static GTFS data."""
+    return load_static_gtfs()
+
+
+
+def get_station_list():
+    """Return a curated, deduplicated list of supported stations."""
+    stops, routes, trips, stop_times = get_static_data()
+
+    allowed_names = {
+        "w 4 st-wash sq",
+        "jay st-metrotech",
+        "bergen st",
+        "4 av-9 st",
+    }
+
+    stations = {}
+
+    for stop in stops:
+        if stop.get("location_type") != "1":
+            continue
+
+        name = stop.get("stop_name", "").strip()
+        normalized_name = name.casefold()
+
+        if normalized_name not in allowed_names:
+            continue
+
+        # Build the station config so multiple parent IDs with
+        # the same station name are represented as one selection.
+        config = build_station_config(
+            name,
+            stops,
+            routes,
+            trips,
+            stop_times
+        )
+
+        station_id = config["station_id"]
+
+        stations[normalized_name] = {
+            "station_id": station_id,
+            "name": config["name"],
+        }
+
+    return sorted(
+        stations.values(),
+        key=lambda station: station["name"].casefold()
+    )
+
+
+
+@lru_cache(maxsize=256)
+def get_station_config(station_id):
+    """Build and cache a station configuration from its GTFS ID."""
+    stops, routes, trips, stop_times = get_static_data()
+
+    station = next(
+        (
+            stop for stop in stops
+            if stop.get("stop_id") == station_id
+            and stop.get("location_type") == "1"
+        ),
+        None
+    )
+
+    if station is None:
+        raise ValueError(f"Unknown station ID: {station_id}")
+
+    return build_station_config(
+        station["stop_name"],
+        stops,
+        routes,
+        trips,
+        stop_times
+    )
+
+
+def get_selected_station_id():
+    """Read and validate the requested station."""
+    requested_id = request.args.get(
+        "station",
+        DEFAULT_STATION_ID
+    )
+
+    valid_ids = {
+        station["station_id"]
+        for station in get_station_list()
+    }
+
+    if requested_id not in valid_ids:
+        return DEFAULT_STATION_ID
+
+    return requested_id
 
 
 def get_selected_direction():
@@ -31,15 +121,18 @@ def get_selected_direction():
     ).lower()
 
     if direction not in ("northbound", "southbound"):
-        direction = DEFAULT_DIRECTION
+        return DEFAULT_DIRECTION
 
     return direction
 
 
-def get_subway_data(max_trains=None, direction=DEFAULT_DIRECTION):
-    """Collect station arrivals and calculate catchable departures."""
-
-    station_config = get_station_config()
+def get_subway_data(
+    station_id=DEFAULT_STATION_ID,
+    max_trains=None,
+    direction=DEFAULT_DIRECTION
+):
+    """Collect and return upcoming arrivals for a station."""
+    station_config = get_station_config(station_id)
 
     # Download each required realtime feed exactly once.
     feeds = {
@@ -47,27 +140,24 @@ def get_subway_data(max_trains=None, direction=DEFAULT_DIRECTION):
         for feed_name in station_config["feeds"]
     }
 
-    # Collect arrivals for the selected direction.
-    all_arrivals = get_station_arrivals(
+    arrivals = get_station_arrivals(
         feeds,
         station_config,
         direction=direction
     )
 
-    # Apply walking time and safety buffer.
-    departure_options = get_departure_options(all_arrivals)
+    # Calculate arrival countdowns without filtering trains out.
+    now = time.time()
+    upcoming_trains = []
 
-    # Keep only the next catchable train for each route.
-    next_trains = {}
+    for train in arrivals:
+        train = train.copy()
+        train["minutes_away"] = round(
+            (train["arrival_time"] - now) / 60
+        )
+        upcoming_trains.append(train)
 
-    for train in departure_options:
-        route = train["route"]
-
-        if route not in next_trains:
-            next_trains[route] = train
-
-    upcoming_trains = sorted(
-        next_trains.values(),
+    upcoming_trains.sort(
         key=lambda train: train["arrival_time"]
     )
 
@@ -79,13 +169,21 @@ def get_subway_data(max_trains=None, direction=DEFAULT_DIRECTION):
 
 @app.route("/")
 def home():
+    station_id = get_selected_station_id()
+    station_config = get_station_config(station_id)
     direction = get_selected_direction()
-    trains = get_subway_data(direction=direction)
+
+    trains = get_subway_data(
+        station_id=station_id,
+        direction=direction
+    )
 
     return render_template(
         "index.html",
         trains=trains,
-        station_name=STATION_NAME,
+        station_name=station_config["name"],
+        station_id=station_id,
+        stations=get_station_list(),
         direction=direction,
         updated=time.strftime("%H:%M:%S")
     )
@@ -93,8 +191,12 @@ def home():
 
 @app.route("/compact")
 def compact():
+    station_id = get_selected_station_id()
+    station_config = get_station_config(station_id)
     direction = get_selected_direction()
+
     trains = get_subway_data(
+        station_id=station_id,
         max_trains=3,
         direction=direction
     )
@@ -102,26 +204,39 @@ def compact():
     return render_template(
         "compact.html",
         trains=trains,
-        station_name=STATION_NAME,
+        station_name=station_config["name"],
+        station_id=station_id,
+        stations=get_station_list(),
         direction=direction,
         updated=time.strftime("%H:%M:%S")
     )
 
 
+@app.route("/api/stations")
+def api_stations():
+    return jsonify(get_station_list())
+
+
 @app.route("/api/trains")
 def api_trains():
+    station_id = get_selected_station_id()
     direction = get_selected_direction()
-    trains = get_subway_data(direction=direction)
-    print("REQUESTED DIRECTION:", request.args.get("direction"))
-    print("SELECTED DIRECTION:", get_selected_direction())  
+
+    trains = get_subway_data(
+        station_id=station_id,
+        direction=direction
+    )
 
     return jsonify(trains)
 
 
 @app.route("/api/compact")
 def api_compact():
+    station_id = get_selected_station_id()
     direction = get_selected_direction()
+
     trains = get_subway_data(
+        station_id=station_id,
         max_trains=3,
         direction=direction
     )

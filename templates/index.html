@@ -1,18 +1,15 @@
+
 <!DOCTYPE html>
-
-<html>
-
+<html lang="en">
 <head>
-
     <title>SubwayPi</title>
-
+    <meta charset="UTF-8">
     <meta
         name="viewport"
         content="width=device-width, initial-scale=1"
     >
 
     <style>
-
         body {
             font-family: Arial, sans-serif;
             background: #111;
@@ -21,21 +18,24 @@
             padding: 30px;
         }
 
-
         .container {
             max-width: 600px;
             margin: auto;
         }
 
-
         h1 {
-            margin-bottom: 5px;
+            margin-bottom: 15px;
         }
 
-
-        .updated {
-            color: #aaa;
-            margin-bottom: 30px;
+        .station-selector {
+            width: 100%;
+            padding: 12px;
+            margin-bottom: 20px;
+            border: 1px solid #444;
+            border-radius: 8px;
+            background: #222;
+            color: white;
+            font-size: 16px;
         }
 
         .direction-selector {
@@ -60,286 +60,178 @@
             color: white;
         }
 
+        .updated {
+            color: #aaa;
+            margin-bottom: 30px;
+        }
 
-        /* --------------------------------
-           Train card
-           -------------------------------- */
+        /* Train cards */
 
         .train {
-
             background: #222;
-
             border-radius: 12px;
-
             padding: 20px;
-
             margin-bottom: 15px;
-
             display: flex;
-
             justify-content: space-between;
-
             align-items: center;
-
             transition:
                 background 0.5s ease,
                 transform 0.5s ease,
                 opacity 0.5s ease;
-
         }
-
-
-        /* --------------------------------
-           Approaching
-           -------------------------------- */
+        /* Train approaching */
 
         .train.approaching {
-
             background: #332f22;
-
         }
 
+        /* Train arriving now */
 
-        /* --------------------------------
-           Leave now
-           -------------------------------- */
-
-        .train.leave-now {
-
+        .train.arriving {
             background: #3a2222;
-
         }
 
-
-        /* --------------------------------
-           Departing animation
-           -------------------------------- */
+        /* Departing animation */
 
         .train.departing {
-
             opacity: 0;
-
-            transform:
-                translateY(-30px);
-
+            transform: translateY(-30px);
         }
-
+        
 
         .route {
-
             font-size: 32px;
-
             font-weight: bold;
-
         }
-
 
         .minutes {
-
             font-size: 28px;
-
         }
-
-
-        .leave {
-
-            color: #aaa;
-
-            margin-top: 5px;
-
-        }
-
-
-        .approaching .leave {
-
-            color: #ddd;
-
-        }
-
-
-        .leave-now .leave {
-
-            color: #fff;
-
-        }
-
-
-        /*
-         * While FLIP animation is happening,
-         * temporarily disable the normal transition.
-         */
 
         .train.flipping {
-
             transition: none;
-
         }
 
+        .empty {
+            color: #aaa;
+            text-align: center;
+            padding: 20px;
+        }
     </style>
-
 </head>
 
-
 <body>
-
-
 <div class="container">
-
 
     <h1>{{ station_name }}</h1>
 
-        <div class="direction-selector">
-
-            <a
-                href="/?direction=northbound"
-                class="{{ 'active' if direction == 'northbound' else '' }}"
+    <select
+        id="station-select"
+        class="station-selector"
+        aria-label="Select station"
+    >
+        {% for station in stations %}
+            <option
+                value="{{ station.station_id }}"
+                {% if station.station_id == station_id %}selected{% endif %}
             >
-                Northbound
-            </a>
+                {{ station.name }}
+            </option>
+        {% endfor %}
+    </select>
 
-            <a
-                href="/?direction=southbound"
-                class="{{ 'active' if direction == 'southbound' else '' }}"
-            >
-                Southbound
-            </a>
+    <div class="direction-selector">
+        <a
+            href="/?station={{ station_id }}&direction=northbound"
+            class="{{ 'active' if direction == 'northbound' else '' }}"
+        >
+            Northbound
+        </a>
 
-        </div>
-
-        <div class="updated">
-
-            {{ direction|capitalize }} • Updated
-
-        <span id="updated">
-            --:--:--
-        </span>
-
+        <a
+            href="/?station={{ station_id }}&direction=southbound"
+            class="{{ 'active' if direction == 'southbound' else '' }}"
+        >
+            Southbound
+        </a>
     </div>
 
+    <div class="updated">
+        {{ direction|capitalize }} • Updated
+        <span id="updated">--:--:--</span>
+    </div>
 
     <div id="trains"></div>
 
-
 </div>
 
-
 <script>
+const stationSelect = document.getElementById("station-select");
+const currentDirection = "{{ direction }}";
+
+// --------------------------------
+// Station selection
+// --------------------------------
+
+stationSelect.addEventListener("change", () => {
+    const params = new URLSearchParams({
+        station: stationSelect.value,
+        direction: currentDirection
+    });
+
+    window.location.href = `/?${params.toString()}`;
+});
 
 
 // --------------------------------
-// Update visual state
+// Animate cards into chronological
+// positions
 // --------------------------------
 
-function updateTrainState(
-    trainElement,
-    train
-) {
 
+function updateTrainState(trainElement, train) {
     trainElement.classList.remove(
         "approaching",
-        "leave-now"
+        "arriving"
     );
 
-
-    if (train.leave_in <= 0) {
-
-        trainElement.classList.add(
-            "leave-now"
-        );
-
+    if (train.minutes_away <= 0) {
+        trainElement.classList.add("arriving");
+    } else if (train.minutes_away <= 2) {
+        trainElement.classList.add("approaching");
     }
-
-    else if (train.leave_in <= 2) {
-
-        trainElement.classList.add(
-            "approaching"
-        );
-
-    }
-
 }
 
 
-// --------------------------------
-// Animate cards into their
-// new chronological positions
-// --------------------------------
-
-function animateReorder(
-    container,
-    previousPositions
-) {
-
-    for (
-        const element
-        of container.children
-    ) {
-
-        const oldPosition =
-            previousPositions.get(
-                element.dataset.tripId
-            );
-
-
-        if (!oldPosition) {
-
-            continue;
-
-        }
-
-
-        const newPosition =
-            element.getBoundingClientRect();
-
-
-        const deltaY =
-            oldPosition.top -
-            newPosition.top;
-
-
-        if (deltaY === 0) {
-
-            continue;
-
-        }
-
-
-        /*
-         * Temporarily move the card
-         * back to where it came from.
-         */
-
-        element.classList.add(
-            "flipping"
+function animateReorder(container, previousPositions) {
+    for (const element of container.children) {
+        const oldPosition = previousPositions.get(
+            element.dataset.tripId
         );
 
+        if (!oldPosition) {
+            continue;
+        }
 
-        element.style.transform =
-            `translateY(${deltaY}px)`;
+        const newPosition = element.getBoundingClientRect();
 
+        const deltaY = oldPosition.top - newPosition.top;
 
-        /*
-         * Force the browser to recognize
-         * the starting position.
-         */
+        if (deltaY === 0) {
+            continue;
+        }
+
+        element.classList.add("flipping");
+        element.style.transform = `translateY(${deltaY}px)`;
 
         element.getBoundingClientRect();
 
-
-        /*
-         * Remove the temporary position.
-         */
-
-        element.classList.remove(
-            "flipping"
-        );
-
-
-        element.style.transform = "";
-
-
+        requestAnimationFrame(() => {
+            element.classList.remove("flipping");
+            element.style.transform = "";
+        });
     }
-
 }
 
 
@@ -348,289 +240,164 @@ function animateReorder(
 // --------------------------------
 
 async function updateTrains() {
-
     try {
+        const params = new URLSearchParams({
+            station: stationSelect.value,
+            direction: currentDirection
+        });
 
-        const response =
-            await fetch(`/api/trains?direction={{ direction }}`);
+        const response = await fetch(
+            `/api/trains?${params.toString()}`
+        );
 
+        if (!response.ok) {
+            throw new Error(`HTTP ${response.status}`);
+        }
 
-        const trains =
-            await response.json();
+        const trains = await response.json();
 
+        const container = document.getElementById("trains");
 
-        const container =
-            document.getElementById(
-                "trains"
-            );
+        // Remember existing card positions
 
+        const previousPositions = new Map();
 
-        // --------------------------------
-        // Remember where existing cards are
-        // --------------------------------
-
-        const previousPositions =
-            new Map();
-
-
-        for (
-            const element
-            of container.children
-        ) {
-
+        for (const element of container.children) {
             previousPositions.set(
                 element.dataset.tripId,
                 element.getBoundingClientRect()
             );
-
         }
 
+        // Find currently displayed trains
 
-        // --------------------------------
-        // Find trains currently displayed
-        // --------------------------------
+        const existingTrains = new Map();
 
-        const existingTrains =
-            new Map();
-
-
-        for (
-            const element
-            of container.children
-        ) {
-
+        for (const element of container.children) {
             existingTrains.set(
                 element.dataset.tripId,
                 element
             );
-
         }
 
+        // Handle an empty result
 
-        // --------------------------------
-        // Process current trains
-        // --------------------------------
+        if (trains.length === 0) {
+            for (const element of existingTrains.values()) {
+                element.classList.add("departing");
 
-        for (const train of trains) {
-
-            const trainId =
-                train.trip_id;
-
-
-            let trainElement =
-                existingTrains.get(
-                    trainId
-                );
-
-
-            // --------------------------------
-            // Existing train
-            // --------------------------------
-
-            if (trainElement) {
-
-                trainElement
-                    .querySelector(".minutes")
-                    .textContent =
-                    `${train.minutes_away} min`;
-
-
-                trainElement
-                    .querySelector(".leave-time")
-                    .textContent =
-                    train.leave_in;
-
-
-                updateTrainState(
-                    trainElement,
-                    train
-                );
-
-
-                existingTrains.delete(
-                    trainId
-                );
-
+                setTimeout(() => element.remove(), 500);
             }
 
+            const emptyMessage = document.createElement("div");
+            emptyMessage.className = "empty";
+            emptyMessage.textContent = "No upcoming trains";
 
-            // --------------------------------
+            container.appendChild(emptyMessage);
+
+            document.getElementById("updated").textContent =
+                new Date().toLocaleTimeString();
+
+            return;
+        }
+
+        // Remove an old empty message
+
+        const emptyMessage = container.querySelector(".empty");
+
+        if (emptyMessage) {
+            emptyMessage.remove();
+        }
+
+        // Process current trains
+
+        for (const train of trains) {
+            const trainId = train.trip_id;
+
+            let trainElement = existingTrains.get(trainId);
+
+            const arrivalText = train.minutes_away <= 0
+                ? "NOW"
+                : `${train.minutes_away} min`;
+
+            // Existing train
+
+            if (trainElement) {
+                trainElement.querySelector(".minutes").textContent =
+                    arrivalText;
+
+                updateTrainState(trainElement, train);
+                existingTrains.delete(trainId);
+            }
+
             // New train
-            // --------------------------------
 
             else {
-
-                trainElement =
-                    document.createElement(
-                        "div"
-                    );
-
-
-                trainElement.className =
-                    "train";
-
-
-                trainElement.id =
-                    `train-${train.trip_id}`;
-
-
-                trainElement.dataset.tripId =
-                    train.trip_id;
-
+                trainElement = document.createElement("div");
+                trainElement.className = "train";
+                trainElement.id = `train-${train.trip_id}`;
+                trainElement.dataset.tripId = train.trip_id;
 
                 trainElement.innerHTML = `
-
                     <div>
-
                         <div class="route">
                             ${train.route} train
                         </div>
-
-
-                        <div class="leave">
-
-                            Leave in
-
-                            <span class="leave-time">
-                                ${train.leave_in}
-                            </span>
-
-                            min
-
-                        </div>
-
                     </div>
-
 
                     <div class="minutes">
-                        ${train.minutes_away} min
+                        ${arrivalText}
                     </div>
-
                 `;
+                updateTrainState(trainElement, train);
 
+                // Insert in chronological order
 
-                updateTrainState(
-                    trainElement,
-                    train
+                const existingElements = Array.from(
+                    container.children
                 );
 
-
-                /*
-                 * Put the new train into
-                 * the correct chronological
-                 * position.
-                 */
-
-                const existingElements =
-                    Array.from(
-                        container.children
+                const insertBefore = existingElements.find(element => {
+                    const existingMinutes = parseInt(
+                        element.querySelector(".minutes")?.textContent
                     );
 
-
-                const insertBefore =
-                    existingElements.find(
-                        element => {
-
-                            const existingMinutes =
-                                parseInt(
-                                    element
-                                        .querySelector(
-                                            ".minutes"
-                                        )
-                                        .textContent
-                                );
-
-
-                            return (
-                                train.minutes_away
-                                <
-                                existingMinutes
-                            );
-
-                        }
+                    return (
+                        !Number.isNaN(existingMinutes) &&
+                        train.minutes_away < existingMinutes
                     );
-
+                });
 
                 if (insertBefore) {
-
-                    container.insertBefore(
-                        trainElement,
-                        insertBefore
-                    );
-
+                    container.insertBefore(trainElement, insertBefore);
+                } else {
+                    container.appendChild(trainElement);
                 }
-
-                else {
-
-                    container.appendChild(
-                        trainElement
-                    );
-
-                }
-
             }
-
         }
 
-
-        // --------------------------------
         // Animate trains that disappeared
-        // --------------------------------
 
-        for (
-            const trainElement
-            of existingTrains.values()
-        ) {
+        for (const trainElement of existingTrains.values()) {
+            trainElement.classList.add("departing");
 
-            trainElement.classList.add(
-                "departing"
-            );
-
-
-            setTimeout(
-                () => {
-
-                    trainElement.remove();
-
-                },
-                500
-            );
-
+            setTimeout(() => {
+                trainElement.remove();
+            }, 500);
         }
 
-
-        // --------------------------------
         // Animate reordering
-        // --------------------------------
 
-        animateReorder(
-            container,
-            previousPositions
-        );
+        animateReorder(container, previousPositions);
 
-
-        // --------------------------------
         // Update timestamp
-        // --------------------------------
 
-        document.getElementById(
-            "updated"
-        ).textContent =
+        document.getElementById("updated").textContent =
             new Date().toLocaleTimeString();
 
-
+    } catch (error) {
+        console.error("Could not update trains:", error);
     }
-
-
-    catch (error) {
-
-        console.error(
-            "Could not update trains:",
-            error
-        );
-
-    }
-
 }
 
 
@@ -645,15 +412,8 @@ updateTrains();
 // Update every 30 seconds
 // --------------------------------
 
-setInterval(
-    updateTrains,
-    30000
-);
-
+setInterval(updateTrains, 30000);
 
 </script>
-
-
 </body>
-
 </html>
