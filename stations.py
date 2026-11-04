@@ -1,11 +1,26 @@
 
 import csv
 import io
+import json
+import os
 import zipfile
+from datetime import datetime, timezone
+from pathlib import Path
 from urllib.request import urlopen
 
 
 STOPS_URL = "https://rrgtfsfeeds.s3.amazonaws.com/gtfs_supplemented.zip"
+
+BASE_DIR = Path(__file__).resolve().parent
+CACHE_DIR = BASE_DIR / "data"
+CACHE_FILE = CACHE_DIR / "station_configs.json"
+
+ALLOWED_STATIONS = {
+    "w 4 st-wash sq",
+    "jay st-metrotech",
+    "bergen st",
+    "4 av-9 st",
+}
 
 FEED_FOR_ROUTE = {
     "1": "123456",
@@ -35,145 +50,290 @@ FEED_FOR_ROUTE = {
 }
 
 
-def _read_csv_from_zip(archive, filename):
+def _read_csv(archive, filename):
+    """Open a CSV member from the GTFS ZIP archive."""
     with archive.open(filename) as file:
         text = io.TextIOWrapper(file, encoding="utf-8")
-        return list(csv.DictReader(text))
+        yield from csv.DictReader(text)
 
 
-def load_static_gtfs():
-    """Download and load the static GTFS files needed for station discovery."""
+def _load_relevant_stops(archive):
+    """Find supported parent stations and their platform stops."""
+    parents = {}
+    parent_ids = set()
+
+    # First pass: identify supported parent stations.
+    for stop in _read_csv(archive, "stops.txt"):
+        name = stop.get("stop_name", "").strip()
+        normalized = name.casefold()
+
+        if (
+            stop.get("location_type") == "1"
+            and normalized in ALLOWED_STATIONS
+            and stop.get("stop_id")
+        ):
+            parents.setdefault(normalized, []).append({
+                "stop_id": stop["stop_id"],
+                "name": name,
+            })
+            parent_ids.add(stop["stop_id"])
+
+    if not parents:
+        raise RuntimeError("No supported stations were found in GTFS.")
+
+    # Second pass: retain only platforms belonging to those parents.
+    platforms = {parent_id: [] for parent_id in parent_ids}
+
+    for stop in _read_csv(archive, "stops.txt"):
+        parent_id = stop.get("parent_station")
+        stop_id = stop.get("stop_id")
+
+        if parent_id in parent_ids and stop_id:
+            platforms[parent_id].append({
+                "stop_id": stop_id,
+                "stop_name": stop.get("stop_name", ""),
+            })
+
+    return parents, platforms
+
+
+def _build_configurations(archive):
+    """Build compact configurations for the supported stations."""
+    parents, platforms_by_parent = _load_relevant_stops(archive)
+
+    # Combine platforms for stations that have multiple parent IDs.
+    station_data = {}
+
+    for normalized_name, parent_records in parents.items():
+        station_ids = sorted(
+            record["stop_id"] for record in parent_records
+        )
+
+        platform_records = []
+        for parent_id in station_ids:
+            platform_records.extend(platforms_by_parent[parent_id])
+
+        platform_ids = {
+            platform["stop_id"] for platform in platform_records
+        }
+
+        directions = {
+            "northbound": [],
+            "southbound": [],
+            "unknown": [],
+        }
+
+        for platform in platform_records:
+            stop_id = platform["stop_id"]
+
+            if stop_id.endswith("N"):
+                direction = "northbound"
+            elif stop_id.endswith("S"):
+                direction = "southbound"
+            else:
+                direction = "unknown"
+
+            directions[direction].append(platform)
+
+        for items in directions.values():
+            items.sort(key=lambda item: item["stop_id"])
+
+        station_data[normalized_name] = {
+            "station_id": station_ids[0],
+            "station_ids": station_ids,
+            "name": parent_records[0]["name"],
+            "platforms": directions,
+            "platform_ids": platform_ids,
+            "routes": set(),
+        }
+
+    all_platform_ids = set()
+    for station in station_data.values():
+        all_platform_ids.update(station["platform_ids"])
+
+    # Find only trips that serve one of our supported platforms.
+    relevant_trip_ids = set()
+    trips_by_station = {
+        name: set() for name in station_data
+    }
+
+    for stop_time in _read_csv(archive, "stop_times.txt"):
+        stop_id = stop_time.get("stop_id")
+        trip_id = stop_time.get("trip_id")
+
+        if stop_id not in all_platform_ids or not trip_id:
+            continue
+
+        relevant_trip_ids.add(trip_id)
+
+        for name, station in station_data.items():
+            if stop_id in station["platform_ids"]:
+                trips_by_station[name].add(trip_id)
+
+    # Retain route IDs only for relevant trips.
+    relevant_routes = {}
+
+    for trip in _read_csv(archive, "trips.txt"):
+        trip_id = trip.get("trip_id")
+        route_id = trip.get("route_id")
+
+        if trip_id in relevant_trip_ids and route_id:
+            relevant_routes[trip_id] = route_id
+
+    # Load only route records referenced by those trips.
+    route_names = {}
+
+    for route in _read_csv(archive, "routes.txt"):
+        route_id = route.get("route_id")
+
+        if route_id in set(relevant_routes.values()):
+            route_names[route_id] = (
+                route.get("route_short_name") or route_id
+            )
+
+    # Assemble each station's final configuration.
+    configurations = {}
+
+    for name, station in station_data.items():
+        serving_routes = set()
+
+        for trip_id in trips_by_station[name]:
+            route_id = relevant_routes.get(trip_id)
+            route_name = route_names.get(route_id)
+
+            if route_name:
+                serving_routes.add(route_name)
+
+        feeds = set()
+        unmapped_routes = []
+
+        for route in sorted(serving_routes):
+            feed = FEED_FOR_ROUTE.get(route)
+            if feed:
+                feeds.add(feed)
+            else:
+                unmapped_routes.append(route)
+
+        configurations[station["station_id"]] = {
+            "station_id": station["station_id"],
+            "station_ids": station["station_ids"],
+            "name": station["name"],
+            "platforms": station["platforms"],
+            "routes": sorted(serving_routes),
+            "feeds": sorted(feeds),
+            "unmapped_routes": unmapped_routes,
+        }
+
+    return configurations
+
+
+def build_station_cache():
+    """Download GTFS once and write compact station configurations."""
+    print("Downloading static GTFS data...")
+
     with urlopen(STOPS_URL, timeout=30) as response:
         data = response.read()
 
+    print(f"Downloaded {len(data):,} bytes.")
+    print("Building station configurations...")
+
     with zipfile.ZipFile(io.BytesIO(data)) as archive:
-        stops = _read_csv_from_zip(archive, "stops.txt")
-        routes = _read_csv_from_zip(archive, "routes.txt")
-        trips = _read_csv_from_zip(archive, "trips.txt")
-        stop_times = _read_csv_from_zip(archive, "stop_times.txt")
+        configurations = _build_configurations(archive)
 
-    return stops, routes, trips, stop_times
+    if not configurations:
+        raise RuntimeError("No station configurations were generated.")
 
-
-def build_station_config(station_name, stops, routes, trips, stop_times):
-    """
-    Build a station-first configuration from static GTFS data.
-
-    Static route information is used only to discover relevant realtime
-    feeds. It is not intended to filter realtime train predictions.
-    """
-    search_name = station_name.strip().casefold()
-
-    station_matches = [
-        stop
-        for stop in stops
-        if stop.get("stop_name", "").strip().casefold() == search_name
-        and stop.get("location_type") == "1"
-    ]
-
-    if not station_matches:
-        raise ValueError(f"Station not found: {station_name}")
-
-    station_ids = {
-        station["stop_id"]
-        for station in station_matches
-        if station.get("stop_id")
+    payload = {
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "stations": configurations,
     }
 
-    platforms = [
-        stop
-        for stop in stops
-        if stop.get("parent_station") in station_ids
-        and stop.get("stop_id")
-    ]
+    CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    temporary_file = CACHE_FILE.with_suffix(".json.tmp")
 
-    if not platforms:
-        raise ValueError(
-            f"No platform stops found for station: {station_name}"
+    with temporary_file.open("w", encoding="utf-8") as file:
+        json.dump(payload, file, separators=(",", ":"))
+        file.flush()
+        os.fsync(file.fileno())
+
+    os.replace(temporary_file, CACHE_FILE)
+
+    print(f"Station cache saved: {CACHE_FILE}")
+    print(f"Stations generated: {len(configurations)}")
+
+    for config in configurations.values():
+        print(
+            f"  {config['name']}: "
+            f"{', '.join(config['routes'])} "
+            f"(feeds: {', '.join(config['feeds'])})"
         )
 
-    platforms_by_direction = {
-        "northbound": [],
-        "southbound": [],
-        "unknown": [],
-    }
+    return configurations
 
-    platform_ids = {
-        platform["stop_id"]
-        for platform in platforms
-    }
 
-    for platform in platforms:
-        stop_id = platform["stop_id"]
-
-        if stop_id.endswith("N"):
-            direction = "northbound"
-        elif stop_id.endswith("S"):
-            direction = "southbound"
-        else:
-            direction = "unknown"
-
-        platforms_by_direction[direction].append({
-            "stop_id": stop_id,
-            "stop_name": platform.get("stop_name", ""),
-        })
-
-    trips_by_id = {
-        trip["trip_id"]: trip
-        for trip in trips
-        if trip.get("trip_id")
-    }
-
-    routes_by_id = {
-        route["route_id"]: route
-        for route in routes
-        if route.get("route_id")
-    }
-
-    serving_routes = set()
-
-    for stop_time in stop_times:
-        if stop_time.get("stop_id") not in platform_ids:
-            continue
-
-        trip = trips_by_id.get(stop_time.get("trip_id"))
-        if not trip:
-            continue
-
-        route = routes_by_id.get(trip.get("route_id"))
-        if not route:
-            continue
-
-        route_name = (
-            route.get("route_short_name")
-            or route.get("route_id")
+def load_station_cache():
+    """Load the compact station configuration cache."""
+    if not CACHE_FILE.exists():
+        raise RuntimeError(
+            f"Station cache not found: {CACHE_FILE}. "
+            "Run python stations.py --build-cache first."
         )
 
-        if route_name:
-            serving_routes.add(route_name)
+    try:
+        with CACHE_FILE.open("r", encoding="utf-8") as file:
+            payload = json.load(file)
 
-    feeds = set()
-    unmapped_routes = []
+        configurations = payload["stations"]
 
-    for route in sorted(serving_routes):
-        feed = FEED_FOR_ROUTE.get(route)
+        if not configurations:
+            raise ValueError("Station cache is empty.")
 
-        if feed:
-            feeds.add(feed)
-        else:
-            unmapped_routes.append(route)
+        return configurations
 
-    for direction_platforms in platforms_by_direction.values():
-        direction_platforms.sort(
-            key=lambda platform: platform["stop_id"]
-        )
+    except (OSError, json.JSONDecodeError, KeyError, TypeError) as error:
+        raise RuntimeError(
+            f"Could not load station cache: {error}"
+        ) from error
 
-    return {
-        "station_id": sorted(station_ids)[0],
-        "station_ids": sorted(station_ids),
-        "name": station_matches[0].get("stop_name", station_name),
-        "platforms": platforms_by_direction,
-        "routes": sorted(serving_routes),
-        "feeds": sorted(feeds),
-        "unmapped_routes": unmapped_routes,
-    }
+
+def get_station_list(configurations):
+    """Return the curated station list."""
+    return sorted(
+        [
+            {
+                "station_id": config["station_id"],
+                "name": config["name"],
+            }
+            for config in configurations.values()
+        ],
+        key=lambda station: station["name"].casefold(),
+    )
+
+
+def get_station_config(configurations, station_id):
+    """Return a cached configuration by station ID."""
+    config = configurations.get(station_id)
+
+    if config is None:
+        raise ValueError(f"Unknown station ID: {station_id}")
+
+    return config
+
+
+if __name__ == "__main__":
+    import argparse
+
+    parser = argparse.ArgumentParser(
+        description="Build or inspect the SubwayPi station cache."
+    )
+    parser.add_argument(
+        "--build-cache",
+        action="store_true",
+        help="Download GTFS and build the station cache.",
+    )
+    args = parser.parse_args()
+
+    if args.build_cache:
+        build_station_cache()
+    else:
+        print("Use: python stations.py --build-cache")

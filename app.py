@@ -1,4 +1,3 @@
-
 from functools import lru_cache
 import time
 
@@ -6,8 +5,12 @@ from flask import Flask, render_template, jsonify, request
 
 from mta import download_feed
 from arrivals import get_station_arrivals
-from stations import load_static_gtfs, build_station_config
-
+from functools import lru_cache
+from stations import (
+    load_station_cache,
+    get_station_list as build_station_list,
+    get_station_config as lookup_station_config,
+)
 
 app = Flask(__name__)
 
@@ -16,84 +19,20 @@ DEFAULT_DIRECTION = "northbound"
 
 
 @lru_cache(maxsize=1)
-def get_static_data():
+def get_station_data():
     """Download and cache the static GTFS data."""
-    return load_static_gtfs()
+    return load_station_cache()
 
 
 
 def get_station_list():
-    """Return a curated, deduplicated list of supported stations."""
-    stops, routes, trips, stop_times = get_static_data()
-
-    allowed_names = {
-        "w 4 st-wash sq",
-        "jay st-metrotech",
-        "bergen st",
-        "4 av-9 st",
-    }
-
-    stations = {}
-
-    for stop in stops:
-        if stop.get("location_type") != "1":
-            continue
-
-        name = stop.get("stop_name", "").strip()
-        normalized_name = name.casefold()
-
-        if normalized_name not in allowed_names:
-            continue
-
-        # Build the station config so multiple parent IDs with
-        # the same station name are represented as one selection.
-        config = build_station_config(
-            name,
-            stops,
-            routes,
-            trips,
-            stop_times
-        )
-
-        station_id = config["station_id"]
-
-        stations[normalized_name] = {
-            "station_id": station_id,
-            "name": config["name"],
-        }
-
-    return sorted(
-        stations.values(),
-        key=lambda station: station["name"].casefold()
-    )
+    """Return the curated list of supported stations."""
+    return build_station_list(get_station_data())
 
 
-
-@lru_cache(maxsize=256)
 def get_station_config(station_id):
-    """Build and cache a station configuration from its GTFS ID."""
-    stops, routes, trips, stop_times = get_static_data()
-
-    station = next(
-        (
-            stop for stop in stops
-            if stop.get("stop_id") == station_id
-            and stop.get("location_type") == "1"
-        ),
-        None
-    )
-
-    if station is None:
-        raise ValueError(f"Unknown station ID: {station_id}")
-
-    return build_station_config(
-        station["stop_name"],
-        stops,
-        routes,
-        trips,
-        stop_times
-    )
-
+    """Return a station configuration from the local cache."""
+    return lookup_station_config(get_station_data(), station_id)
 
 def get_selected_station_id():
     """Read and validate the requested station."""
@@ -175,6 +114,7 @@ def home():
 
     trains = get_subway_data(
         station_id=station_id,
+	max_trains=5,
         direction=direction
     )
 
