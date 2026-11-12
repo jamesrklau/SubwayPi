@@ -1,25 +1,42 @@
 
-# Python bytecode and caches
-__pycache__/
-*.py[cod]
-*.pyo
-
-# Virtual environments
+# Python virtual environments
 .venv/
 venv/
 env/
+
+# Python generated files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Python testing and coverage
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
 
 # Environment variables and secrets
 .env
 .env.*
 !.env.example
 
-# Test and coverage artifacts
-.pytest_cache/
-.coverage
-htmlcov/
+# Logs and temporary files
+*.log
+*.tmp
+*.bak
+*.save
 
-# Editor and operating system files
-.DS_Store
+# Editor files
 .vscode/
 .idea/
+*.swp
+*.swo
+
+# Operating system files
+.DS_Store
+Thumbs.db
+
+# Build artifacts
+build/
+dist/
+*.egg-info/
