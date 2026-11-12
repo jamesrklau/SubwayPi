@@ -141,7 +141,7 @@ def home():
 
     trains = get_subway_data(
         station_id=station_id,
-	max_trains=5,
+	max_trains=7,
         direction=direction
     )
 
@@ -191,6 +191,7 @@ def api_trains():
 
     trains = get_subway_data(
         station_id=station_id,
+        max_trains=7,        
         direction=direction
     )
 
