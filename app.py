@@ -231,7 +231,7 @@ def api_feed_status():
 
     status["status"] = (
         "healthy"
-        if not status["missing_feeds"]
+        if not status["missing_feeds"] and not status["errors"]
         else "degraded"
     )
 
